@@ -1,9 +1,45 @@
-import { dereference } from '@jdw/jst';
+import { dereference, isPointer } from '@jdw/jst';
 // tslint:disable-next-line no-submodule-imports
 import { validateSync as openApiValidatorSync } from 'swagger2openapi/validate';
 import * as uuid from 'uuid';
 import { IDefinition, IDefinitionConfig, IOperation, IParameterConfig, IServerlessFunctionConfig } from './types';
 import { clone, isIterable, merge } from './utils';
+import * as YAML from 'js-yaml';
+import * as path from 'path';
+import { readFileSync } from 'fs';
+
+const isJsonFile = (fileName) => ['json'].indexOf(fileName.split('.').pop()) > -1;
+const isYamlFile = (fileName) => ['yml', 'yaml'].indexOf(fileName.split('.').pop()) > -1;
+const isLoadableFile = (fileName) => isJsonFile(fileName) || isYamlFile(fileName);
+
+// Try to load any refs that aren't pointers or URLs as files and inline them.
+function replaceRefs(obj: object) {
+  for (let key of Object.keys(obj)) {
+    const value = obj[key];
+
+    if (typeof value === 'object') {
+      replaceRefs(value);
+    }
+
+    if (key !== '$ref'
+      || isPointer(value)
+      || /^http/.test(value)
+      || !isLoadableFile(value)) {
+      continue;
+    }
+
+    try {
+      const model: object = isJsonFile(value) 
+        ? require(path.join(process.cwd(), value))
+        : YAML.safeLoad(readFileSync(value, 'utf8'));
+
+      delete obj[key];
+      Object.assign(obj, model);
+    } catch (error) {
+      // Do nothing if the file can't be loaded.
+    }
+  }
+}
 
 export class DefinitionGenerator {
   // The OpenAPI version we currently validate against
@@ -48,6 +84,8 @@ export class DefinitionGenerator {
         if (!model.schema) {
           continue;
         }
+
+        replaceRefs(model.schema);
 
         this.definition.components.schemas[model.name] = this.cleanSchema(
           dereference(model.schema),
